@@ -27,7 +27,7 @@ func buildTaskXML(exe, workDir string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>校园网门户自动重登保活代理（10.20.33.101 / Panabit RAAS）。仅用于本机自身账号保活。</Description>
+    <Description>校园网门户自动重登保活代理。仅用于本机自身账号保活。</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>

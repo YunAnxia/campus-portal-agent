@@ -6,33 +6,38 @@ import (
 	"path/filepath"
 )
 
-// Config 是 agent 的配置。字段名与 config.json 一一对应。
+// Config 是 agent 的配置，字段名与 config.json 一一对应。
+//
+// 注意：Password 以明文保存在 config.json 中。该文件已列入 .gitignore，
+// 请勿提交、上传，或把工作目录整个分享出去。
 type Config struct {
-	Portal             string `json:"portal"`
-	User               string `json:"user"`
-	AuthMode           int    `json:"authmode"`
-	Pool               string `json:"pool"`
-	ISPID              int    `json:"isp_id"`
-	PxyAcct            string `json:"pxyacct"`
-	ExpectIPPrefix     string `json:"expected_ip_prefix"`
-	IntervalSeconds    int    `json:"interval_seconds"`
-	MaxBackoffSeconds  int    `json:"max_backoff_seconds"`
-	TimeoutSeconds     int    `json:"timeout_seconds"`
-	ConnectivityURL    string `json:"connectivity_url"`
-	ConnectivityExpect string `json:"connectivity_expect"`
-	// ConnectivityRetries：单轮内连通性检查的重试次数（抗瞬时抖动）。
-	ConnectivityRetries int `json:"connectivity_retries"`
+	Portal   string `json:"portal"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+
+	AuthMode int    `json:"authmode"`
+	Pool     string `json:"pool"`
+	ISPID    int    `json:"isp_id"`
+	PxyAcct  string `json:"pxyacct"`
+
+	ExpectIPPrefix    string `json:"expected_ip_prefix"`
+	IntervalSeconds   int    `json:"interval_seconds"`
+	MaxBackoffSeconds int    `json:"max_backoff_seconds"`
+	TimeoutSeconds    int    `json:"timeout_seconds"`
+
+	ConnectivityURL     string `json:"connectivity_url"`
+	ConnectivityExpect  string `json:"connectivity_expect"`
+	ConnectivityRetries int    `json:"connectivity_retries"`
+
 	// NetFailThreshold：logined==1 但连通性连续失败多少轮后才判定为掉线。
 	// 用于避免因一次网络抖动而发起不必要的重登（重登会挤掉另一台设备）。
 	NetFailThreshold int   `json:"net_fail_threshold"`
-	MachineScope     bool  `json:"machine_scope"`
 	LogMaxBytes      int64 `json:"log_max_bytes"`
 }
 
 func defaultConfig() Config {
 	return Config{
 		Portal:              "http://10.20.33.101",
-		User:                "",
 		AuthMode:            0,
 		Pool:                "",
 		ISPID:               0,
@@ -45,7 +50,6 @@ func defaultConfig() Config {
 		ConnectivityExpect:  "Microsoft Connect Test",
 		ConnectivityRetries: 3,
 		NetFailThreshold:    2,
-		MachineScope:        true,
 		LogMaxBytes:         5 << 20,
 	}
 }

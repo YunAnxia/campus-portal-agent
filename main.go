@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,7 +11,7 @@ import (
 	"time"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 func defaultDir() string {
 	exe, err := os.Executable()
@@ -43,21 +42,18 @@ func usage() {
 命令:
   status      只读探测当前认证状态与外网连通性，不做任何认证动作（安全，可随时运行）
   once        执行一个周期：检测，必要时重新认证，然后退出
-  run         常驻循环（默认命令；供计划任务/服务使用）
-  set-cred    设置账号与密码（密码用 DPAPI 加密后写入 credential.dpapi）
+  run         常驻循环（默认命令；供计划任务使用）
   install     注册开机启动的计划任务（SYSTEM 身份，失败自动重启）
   uninstall   删除该计划任务
   taskxml     打印计划任务 XML（无法自动注册时可手动导入）
-  decode <hex>  仅用于取证：解密一个门户 encode() 密文，显示盐与明文
+  decode <hex>  解密一个门户 encode() 密文，显示盐与明文
   version     显示版本
 
 工作目录下会生成:
-  config.json        配置
-  credential.dpapi   DPAPI 加密的密码
-  agent.log          滚动日志
+  config.json   配置（含账号与密码明文，已列入 .gitignore，切勿提交或分享）
+  agent.log     滚动日志
 
 示例:
-  portalagent set-cred
   portalagent status
   portalagent once
   portalagent install
@@ -79,7 +75,6 @@ func main() {
 	_ = fs.Parse(args)
 
 	cfgPath := filepath.Join(*dir, "config.json")
-	credPath := filepath.Join(*dir, "credential.dpapi")
 	logPath := filepath.Join(*dir, "agent.log")
 
 	cfg, err := loadConfig(cfgPath)
@@ -99,13 +94,11 @@ func main() {
 	case "status":
 		cmdStatus(cfg)
 	case "once":
-		cmdOnce(cfg, credPath, lg)
+		cmdOnce(cfg, lg)
 	case "run":
-		cmdRun(cfg, credPath, lg)
-	case "set-cred":
-		cmdSetCred(cfg, cfgPath, credPath, lg)
+		cmdRun(cfg, lg)
 	case "install":
-		cmdInstall(cfg, cfgPath, credPath, lg)
+		cmdInstall(cfg, cfgPath, lg)
 	case "uninstall":
 		cmdUninstall(lg)
 	case "taskxml":
@@ -130,6 +123,7 @@ func cmdStatus(cfg Config) {
 		fmt.Printf("本机校园网地址 : 未检测到（期望前缀 %q）\n", cfg.ExpectIPPrefix)
 	}
 	fmt.Printf("门户           : %s\n", cfg.Portal)
+	fmt.Printf("账号           : %s\n", cfg.User)
 
 	c, err := NewPortalClient(cfg)
 	if err != nil {
@@ -176,7 +170,7 @@ const (
 	kindError       = "error"
 )
 
-func runCycle(cfg Config, credPath string, lg *Logger, state *agentState) cycleResult {
+func runCycle(cfg Config, lg *Logger, state *agentState) cycleResult {
 	// 前置守卫：本机必须处于预期的校园网网段，避免在别的网络下误触发认证
 	if campusIPv4(cfg.ExpectIPPrefix) == "" {
 		return cycleResult{Kind: kindSkip,
@@ -216,20 +210,17 @@ func runCycle(cfg Config, credPath string, lg *Logger, state *agentState) cycleR
 		state.netBadStreak = 0
 	}
 
+	if cfg.User == "" || cfg.Password == "" {
+		return cycleResult{Kind: kindError, Detail: "config.json 中缺少 user 或 password"}
+	}
+
 	lg.Warnf("检测到掉线（ip=%s logined=%d 外网=%v %s），开始重新认证",
 		st.Data.IP, st.Data.Logined, netOK, netDetail)
 
-	plain, err := loadPassword(cfg, credPath)
-	if err != nil {
-		return cycleResult{Kind: kindError, Detail: "读取凭据失败: " + err.Error()}
-	}
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
-	pass, encErr := EncodePassword(plain, rnd)
-	for i := range plain {
-		plain[i] = 0 // 尽力清零（Go 无法保证内存被彻底擦除）
-	}
-	if encErr != nil {
-		return cycleResult{Kind: kindError, Detail: "计算口令密文失败: " + encErr.Error()}
+	pass, err := EncodePassword([]byte(cfg.Password), rnd)
+	if err != nil {
+		return cycleResult{Kind: kindError, Detail: "计算口令密文失败: " + err.Error()}
 	}
 
 	lr, err := c.Login(pass)
@@ -255,12 +246,12 @@ func runCycle(cfg Config, credPath string, lg *Logger, state *agentState) cycleR
 		Detail: fmt.Sprintf("认证后复核未通过（ack=%d stat=%d %q）", lr.AckRet, lr.StatRet, lr.StatMsg)}
 }
 
-func cmdOnce(cfg Config, credPath string, lg *Logger) {
-	res := runCycle(cfg, credPath, lg, &agentState{})
+func cmdOnce(cfg Config, lg *Logger) {
+	res := runCycle(cfg, lg, &agentState{})
 	lg.Infof("单次执行: kind=%s ip=%s %s", res.Kind, res.IP, res.Detail)
 }
 
-func cmdRun(cfg Config, credPath string, lg *Logger) {
+func cmdRun(cfg Config, lg *Logger) {
 	lg.Infof("portalagent %s 启动（门户 %s，账号 %s，间隔 %ds）",
 		version, cfg.Portal, cfg.User, cfg.IntervalSeconds)
 
@@ -269,7 +260,7 @@ func cmdRun(cfg Config, credPath string, lg *Logger) {
 	state := &agentState{}
 
 	for {
-		res := runCycle(cfg, credPath, lg, state)
+		res := runCycle(cfg, lg, state)
 
 		switch res.Kind {
 		case kindOK:
@@ -318,42 +309,9 @@ func nextBackoff(cur, max int) int {
 	return n
 }
 
-func cmdSetCred(cfg Config, cfgPath, credPath string, lg *Logger) {
-	if cfg.User == "" {
-		fmt.Print("请输入校园网账号: ")
-		rd := bufio.NewReader(os.Stdin)
-		s, _ := rd.ReadString('\n')
-		cfg.User = strings.TrimSpace(s)
-		if cfg.User == "" {
-			fatal("账号不能为空")
-		}
-	}
-	fmt.Printf("账号: %s\n", cfg.User)
-	fmt.Print("请输入校园网密码（输入不回显）: ")
-	pw, err := readPassword()
-	if err != nil {
-		fatal("读取密码失败: %v", err)
-	}
-	if pw == "" {
-		fatal("密码不能为空")
-	}
-	if err := savePassword(cfg, credPath, []byte(pw)); err != nil {
-		fatal("保存凭据失败: %v", err)
-	}
-	pw = ""
-	if err := saveConfig(cfgPath, cfg); err != nil {
-		fatal("保存配置失败: %v", err)
-	}
-	fmt.Printf("已写入:\n  %s\n  %s\n", cfgPath, credPath)
-	lg.Infof("凭据已更新（账号 %s，DPAPI machine_scope=%v）", cfg.User, cfg.MachineScope)
-}
-
-func cmdInstall(cfg Config, cfgPath, credPath string, lg *Logger) {
-	if cfg.User == "" {
-		fatal("配置中缺少账号，请先执行: portalagent set-cred")
-	}
-	if _, err := os.Stat(credPath); err != nil {
-		fatal("凭据文件不存在，请先执行: portalagent set-cred")
+func cmdInstall(cfg Config, cfgPath string, lg *Logger) {
+	if cfg.User == "" || cfg.Password == "" {
+		fatal("config.json 中缺少 user 或 password，请先补齐后重试")
 	}
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		if err := saveConfig(cfgPath, cfg); err != nil {
@@ -390,7 +348,7 @@ func cmdTaskXML() {
 	fmt.Print(buildTaskXML(exe, filepath.Dir(exe)))
 }
 
-// cmdDecode 仅用于取证复核：解密前端 encode() 产出的密文。
+// cmdDecode 解密前端 encode() 产出的密文，用于核对算法是否与门户一致。
 func cmdDecode(args []string) {
 	var hexStr string
 	for _, a := range args {
@@ -409,9 +367,7 @@ func cmdDecode(args []string) {
 	if len(pt) < 4 {
 		fatal("明文长度异常: %d", len(pt))
 	}
-	salt := string(pt[:4])
-	body := strings.TrimRight(string(pt[4:]), "\x00")
-	fmt.Printf("盐   : %s\n", salt)
-	fmt.Printf("明文 : %s\n", body)
+	fmt.Printf("盐   : %s\n", string(pt[:4]))
+	fmt.Printf("明文 : %s\n", strings.TrimRight(string(pt[4:]), "\x00"))
 	fmt.Printf("长度 : %d（含盐）\n", len(pt))
 }

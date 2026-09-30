@@ -169,7 +169,7 @@ type LoginResult struct {
 
 // Login 复刻抓包还原的认证时序：ip.php → login.php → ack_auth.php → stat.php
 func (c *PortalClient) Login(passHex string) (*LoginResult, error) {
-	// 1) 先探活，让 PHP 下发 RAASSESSID，建立会话
+	// 1) 先探活，让服务端下发会话 Cookie，建立会话
 	_, _ = c.Status()
 
 	// 字段顺序与抓包一致：user & pass & authmode & pool & isp_id & pxyacct

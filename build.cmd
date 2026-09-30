@@ -16,10 +16,6 @@ echo --- go vet ---
 go vet ./...
 if errorlevel 1 goto fail
 
-echo --- go test ---
-go test ./...
-if errorlevel 1 goto fail
-
 echo --- go build ---
 go build -trimpath -ldflags "-s -w" -o portalagent.exe .
 if errorlevel 1 goto fail

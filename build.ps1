@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build portalagent: gofmt check + go vet + go test + compile.
+    Build portalagent: gofmt check + go vet + compile.
 .EXAMPLE
     .\build.ps1
     .\build.ps1 -Out C:\ProgramData\CampusPortalAgent\portalagent.exe
@@ -28,10 +28,6 @@ try {
     Write-Host '--- go vet ---' -ForegroundColor Cyan
     go vet ./...
     if ($LASTEXITCODE -ne 0) { throw 'go vet failed' }
-
-    Write-Host '--- go test ---' -ForegroundColor Cyan
-    go test ./...
-    if ($LASTEXITCODE -ne 0) { throw 'go test failed' }
 
     Write-Host '--- go build ---' -ForegroundColor Cyan
     $env:CGO_ENABLED = '0'

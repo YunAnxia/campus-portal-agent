@@ -51,7 +51,7 @@ func encryptPortalBlob(data []byte) (string, error) {
 //	明文   = salt + 密码
 //	密文   = AES-128-ECB(ZeroPadding(明文), key) 的 hex 小写
 //
-// 明文以 []byte 传入，便于调用方在用完后清零。
+// 每次调用都用新的随机盐，因此同一口令每次产出的密文都不同。
 func EncodePassword(plain []byte, rnd *rand.Rand) (string, error) {
 	if len(plain) == 0 {
 		return "", errors.New("密码为空")
@@ -69,7 +69,7 @@ func EncodePassword(plain []byte, rnd *rand.Rand) (string, error) {
 	return encryptPortalBlob(data)
 }
 
-// DecodePassword 仅供测试/取证使用：还原 salt 与明文。
+// DecodePassword 还原 salt 与明文，供 `portalagent decode` 核对算法用。
 func DecodePassword(hexCipher string) ([]byte, error) {
 	ct, err := hex.DecodeString(hexCipher)
 	if err != nil {

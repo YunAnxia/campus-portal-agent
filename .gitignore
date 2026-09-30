@@ -1,5 +1,4 @@
 # ---- 敏感运行时文件：绝不入库 ----
-credential.dpapi
 config.json
 *.log
 *.log.old
