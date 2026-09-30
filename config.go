@@ -42,12 +42,16 @@ func defaultConfig() Config {
 		Pool:                "",
 		ISPID:               0,
 		PxyAcct:             "",
-		ExpectIPPrefix:      "10.112.",
-		IntervalSeconds:     30,
-		MaxBackoffSeconds:   300,
-		TimeoutSeconds:      10,
-		ConnectivityURL:     "http://www.msftconnecttest.com/connecttest.txt",
-		ConnectivityExpect:  "Microsoft Connect Test",
+		ExpectIPPrefix:    "10.112.",
+		IntervalSeconds:   30,
+		MaxBackoffSeconds: 300,
+		TimeoutSeconds:    10,
+		// 连通性探测地址必须是「在你所在网络中可达」且「正文稳定」的 HTTP 地址。
+		// 实测 www.msftconnecttest.com 在部分校园网被丢弃（curl 返回 000），
+		// 会导致误判为掉线并反复重登，因此默认改用 baidu 的 robots.txt。
+		// 它同样是合格的劫持探测器：门户劫持会返回 3xx，或返回门户页面（不含该关键词）。
+		ConnectivityURL:     "http://www.baidu.com/robots.txt",
+		ConnectivityExpect:  "Baiduspider",
 		ConnectivityRetries: 3,
 		NetFailThreshold:    2,
 		LogMaxBytes:         5 << 20,

@@ -10,8 +10,8 @@
   "interval_seconds": 30,
   "max_backoff_seconds": 300,
   "timeout_seconds": 10,
-  "connectivity_url": "http://www.msftconnecttest.com/connecttest.txt",
-  "connectivity_expect": "Microsoft Connect Test",
+  "connectivity_url": "http://www.baidu.com/robots.txt",
+  "connectivity_expect": "Baiduspider",
   "connectivity_retries": 3,
   "net_fail_threshold": 2,
   "log_max_bytes": 5242880

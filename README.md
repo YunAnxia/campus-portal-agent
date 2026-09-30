@@ -151,7 +151,7 @@ POST /api/ip.php        复核（新会话）
 | `interval_seconds` | `30` | 正常轮询间隔 |
 | `max_backoff_seconds` | `300` | 退避上限 |
 | `timeout_seconds` | `10` | 单次请求超时 |
-| `connectivity_url` / `connectivity_expect` | msftconnecttest | 真实连通性检查 |
+| `connectivity_url` / `connectivity_expect` | baidu `robots.txt` / `Baiduspider` | 真实连通性检查。**必须选一个在你所在网络里可达、且正文稳定的 HTTP 地址** —— 实测 `www.msftconnecttest.com` 在部分校园网被丢弃（连不通），会导致误判掉线并反复重登 |
 | `connectivity_retries` | `3` | 单轮连通性检查重试次数 |
 | `net_fail_threshold` | `2` | 连续多少轮不通才判定掉线 |
 | `log_max_bytes` | `5242880` | 日志超过则轮转为 `agent.log.old` |
@@ -175,6 +175,7 @@ Get-Content C:\ProgramData\CampusPortalAgent\agent.log -Encoding UTF8 -Tail 50
 | 日志显示 `缺少 user 或 password` | `config.json` 未填完 |
 | 日志显示 `login.php ret=...` | 账号被限制、密码已改、或并发数上限触顶。按 `msg` 判断 |
 | 认证成功但外网仍不通 | 检查是否有其他策略（限速/封锁）或本机 DNS |
+| 日志反复出现"检测到掉线 → 已重新认证成功" | 连通性探测地址在本网络不可达（换 `connectivity_url`），或 `logined` 与实际状态不符 |
 | 任务未运行 | 确认以管理员安装；可用 `schtasks /Run /TN CampusPortalAgent` 手动触发 |
 | `build.cmd` 报 `'xxx' is not recognized` | 文件被编辑器改成了 LF 换行或含非 ASCII 字符。批处理要求 **CRLF + 纯 ASCII**（仓库已用 `.gitattributes` 锁定 `*.cmd` 为 CRLF） |
 
