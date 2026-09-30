@@ -10,9 +10,14 @@
   "interval_seconds": 30,
   "max_backoff_seconds": 300,
   "timeout_seconds": 10,
-  "connectivity_url": "http://www.baidu.com/robots.txt",
-  "connectivity_expect": "Baiduspider",
-  "connectivity_retries": 3,
+  "probes": [
+    { "name": "百度",   "url": "http://www.baidu.com/robots.txt",      "expect": "Baiduspider" },
+    { "name": "必应",   "url": "http://www.bing.com/robots.txt",       "expect": "msnbot" },
+    { "name": "阿里云", "url": "http://mirrors.aliyun.com/robots.txt", "expect": "User-agent" },
+    { "name": "腾讯云", "url": "http://cloud.tencent.com/robots.txt",  "expect": "tencent" }
+  ],
+  "probe_threshold": 3,
+  "probe_timeout_seconds": 8,
   "net_fail_threshold": 2,
   "log_max_bytes": 5242880
 }

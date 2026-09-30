@@ -93,15 +93,36 @@ cd C:\ProgramData\CampusPortalAgent
 
 ## 4. 工作原理
 
-### 4.1 判定
+### 4.1 判定：多探针投票 + 门户接口兜底
 
-每轮先做两个检查，**两者都通过**才算正常：
+每轮分两步，**先探针、后门户接口**：
 
-1. `POST /api/ip.php` → `data.logined == 1`
-2. 真实连通性检查：GET `connectivity_url`，要求 HTTP 200 且内容包含 `connectivity_expect`
+**第 1 步 · 多探针并发投票**
 
-第 2 步很重要：光看 `logined` 不够，某些状态下接口会返回成功但实际流量被丢弃。
-检查时**不跟随重定向**，因此门户劫持会表现为 3xx 或内容不符，被判为"未连通"。
+并发请求 `probes` 里配置的多个独立厂商端点。一个探针被判为"通"的条件是二者之一：
+
+1. HTTP **200**，且 `expect` 为空或正文包含 `expect`（忽略大小写）；
+2. HTTP **3xx**（301/302/303/307/308），且 `Location` **不指向门户**。
+
+第 2 条很关键：实测必应会跳 `http://cn.bing.com/...`、腾讯云会跳 `https://cloud.tencent.com/...`，
+若只认 200，正常跳转也会被判为不通，导致**每轮都误重登**。
+而门户劫持的跳转目标是门户自身，所以用「Location 是否指向门户」精确区分。
+
+成功数 ≥ `probe_threshold`（默认 3）即判为**网络正常**，本轮结束，**不再请求门户接口**。
+
+**第 2 步 · 探针不达标时，查门户认证态**
+
+```
+POST /api/ip.php
+  ├─ logined == 0  → 已掉线，立即重登
+  └─ logined == 1  → 认证态尚在但外网不通
+                     连续 net_fail_threshold 轮（默认 2）才判为"会话僵死"并重登
+                     未达阈值只记录观察，避免因瞬时抖动白白挤掉另一台设备
+```
+
+之所以把多探针放在前面：单一探针极易被"目标站点本身在本网络不可达"误伤
+（实测 `www.msftconnecttest.com` 在校园网连不通、`dns.alidns.com` 与 `doh.pub` 的 DoH 也全部不通），
+一旦误判就会反复重登，反而不断挤掉使用者其它设备。
 
 ### 4.2 重登时序
 
@@ -110,7 +131,7 @@ POST /api/ip.php        建立会话，取得会话 Cookie
 POST /api/login.php     user & pass & authmode & pool & isp_id & pxyacct
 POST /api/ack_auth.php  认证确认
 POST /api/stat.php      状态确认，期望 msg 为「认证成功！」
-POST /api/ip.php        复核（新会话）
+（复核）多探针 + 新建会话再探一次 ip.php
 ```
 
 ### 4.3 仅使用 `logined`，不看 `sessionlogined`
@@ -120,11 +141,8 @@ POST /api/ip.php        复核（新会话）
 
 ### 4.4 抖动抑制
 
-实测遇到过 `logined=1` 但外网瞬时不通的情况（一次 curl 空输出，18 秒后自行恢复）。
-若据此直接重登，会**平白挤掉使用者另一台设备**。因此：
-
-- 单轮内连通性检查重试 `connectivity_retries` 次（默认 3，间隔 2s）
-- `logined=1` 但外网不通时需连续 `net_fail_threshold` 轮（默认 2）才判定掉线
+- 多探针投票本身就抗单点抖动（4 个里坏 1 个不影响结论）
+- `logined=1` 但探针不达标时，需连续 `net_fail_threshold` 轮（默认 2）才重登
 - `logined=0` 则**立即**重登 —— 这个信号无歧义，不需要等
 
 ### 4.5 前置守卫
@@ -151,10 +169,16 @@ POST /api/ip.php        复核（新会话）
 | `interval_seconds` | `30` | 正常轮询间隔 |
 | `max_backoff_seconds` | `300` | 退避上限 |
 | `timeout_seconds` | `10` | 单次请求超时 |
-| `connectivity_url` / `connectivity_expect` | baidu `robots.txt` / `Baiduspider` | 真实连通性检查。**必须选一个在你所在网络里可达、且正文稳定的 HTTP 地址** —— 实测 `www.msftconnecttest.com` 在部分校园网被丢弃（连不通），会导致误判掉线并反复重登 |
-| `connectivity_retries` | `3` | 单轮连通性检查重试次数 |
-| `net_fail_threshold` | `2` | 连续多少轮不通才判定掉线 |
+| `probes` | 百度 / 必应 / 阿里云 / 腾讯云 | 探针列表，每项 `{name, url, expect}`。并发请求，多探针投票 |
+| `probe_threshold` | `3` | 至少多少个探针通过才判为网络正常 |
+| `probe_timeout_seconds` | `8` | 单个探针的超时 |
+| `net_fail_threshold` | `2` | 探针不达标但 `logined=1` 时，连续多少轮才判为会话僵死并重登 |
 | `log_max_bytes` | `5242880` | 日志超过则轮转为 `agent.log.old` |
+
+> **换探针时注意**：每个探针都必须是「在你所在网络里可达、且正文稳定」的普通 HTTP 地址。
+> 实测在本校园网内，`www.msftconnecttest.com`、`detectportal.firefox.com`、
+> 以及阿里云/腾讯云的 DoH 端点（`dns.alidns.com`、`doh.pub`）**全部连不通**，
+> 用它们当探针会导致误判掉线并反复重登。仓库默认的四个探针均已实测可用。
 
 ## 6. 排错
 
@@ -175,7 +199,7 @@ Get-Content C:\ProgramData\CampusPortalAgent\agent.log -Encoding UTF8 -Tail 50
 | 日志显示 `缺少 user 或 password` | `config.json` 未填完 |
 | 日志显示 `login.php ret=...` | 账号被限制、密码已改、或并发数上限触顶。按 `msg` 判断 |
 | 认证成功但外网仍不通 | 检查是否有其他策略（限速/封锁）或本机 DNS |
-| 日志反复出现"检测到掉线 → 已重新认证成功" | 连通性探测地址在本网络不可达（换 `connectivity_url`），或 `logined` 与实际状态不符 |
+| 日志反复出现"检测到掉线 → 已重新认证成功" | 某个探针目标在本网络不可达（用 `status` 看哪个探针挂了），或 `probe_threshold` 设得过高 |
 | 任务未运行 | 确认以管理员安装；可用 `schtasks /Run /TN CampusPortalAgent` 手动触发 |
 | `build.cmd` 报 `'xxx' is not recognized` | 文件被编辑器改成了 LF 换行或含非 ASCII 字符。批处理要求 **CRLF + 纯 ASCII**（仓库已用 `.gitattributes` 锁定 `*.cmd` 为 CRLF） |
 

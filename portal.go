@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -106,57 +107,133 @@ func (c *PortalClient) Status() (*PortalStatus, error) {
 	return &st, nil
 }
 
-// CheckInternet 做一次真实连通性检查（带重试，抗瞬时抖动）。
-// 不跟随重定向：门户劫持会表现为 3xx 或内容不符，从而被识别为"未连通"。
-func (c *PortalClient) CheckInternet() (bool, string) {
-	retries := c.cfg.ConnectivityRetries
-	if retries < 1 {
-		retries = 1
-	}
-	var detail string
-	for i := 1; i <= retries; i++ {
-		ok, d := c.checkInternetOnce()
-		if ok {
-			return true, "ok"
-		}
-		detail = d
-		if i < retries {
-			time.Sleep(2 * time.Second)
-		}
-	}
-	return false, detail
+// ProbeResult 是单个探针的结果。
+type ProbeResult struct {
+	Name   string
+	OK     bool
+	Status int
+	Detail string
 }
 
-func (c *PortalClient) checkInternetOnce() (bool, string) {
+// CheckProbes 并发执行全部探针，返回成功个数与明细。
+//
+// 判定为"通"的条件（二者之一）：
+//  1. HTTP 200，且 Expect 为空或正文包含 Expect（忽略大小写）；
+//  2. HTTP 3xx，且 Location 不指向门户 —— 正常 HTTPS 跳转算通，
+//     门户劫持的跳转目标是门户自身，会被判为不通。
+func (c *PortalClient) CheckProbes() (int, []ProbeResult) {
+	probes := c.cfg.Probes
+	results := make([]ProbeResult, len(probes))
+
+	var wg sync.WaitGroup
+	for i, p := range probes {
+		wg.Add(1)
+		go func(i int, p Probe) {
+			defer wg.Done()
+			results[i] = c.runProbe(p)
+		}(i, p)
+	}
+	wg.Wait()
+
+	okCount := 0
+	for _, r := range results {
+		if r.OK {
+			okCount++
+		}
+	}
+	return okCount, results
+}
+
+func (c *PortalClient) runProbe(p Probe) ProbeResult {
+	res := ProbeResult{Name: p.Name}
+
+	timeout := c.cfg.ProbeTimeoutSeconds
+	if timeout <= 0 {
+		timeout = 8
+	}
 	client := &http.Client{
-		Timeout:   time.Duration(c.cfg.TimeoutSeconds) * time.Second,
-		Transport: &http.Transport{Proxy: nil},
+		Timeout: time.Duration(timeout) * time.Second,
+		Transport: &http.Transport{
+			Proxy:             nil, // 直连；不读系统代理
+			DisableKeepAlives: true,
+		},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
+			return http.ErrUseLastResponse // 不跟随，便于识别劫持
 		},
 	}
-	req, err := http.NewRequest(http.MethodGet, c.cfg.ConnectivityURL, nil)
+
+	req, err := http.NewRequest(http.MethodGet, p.URL, nil)
 	if err != nil {
-		return false, "构造请求失败: " + err.Error()
+		res.Detail = "构造请求失败: " + err.Error()
+		return res
 	}
 	req.Header.Set("User-Agent", portalUA)
 	req.Header.Set("Cache-Control", "no-cache")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, "请求失败: " + err.Error()
+		res.Detail = err.Error()
+		return res
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	body := string(b)
+	res.Status = resp.StatusCode
+
+	// 3xx：只要不跳到门户就算通
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			res.Detail = fmt.Sprintf("HTTP %d 但无 Location", resp.StatusCode)
+			return res
+		}
+		if strings.Contains(loc, c.cfg.Portal) || strings.Contains(loc, hostOf(c.cfg.Portal)) {
+			res.Detail = "被重定向到门户: " + truncate(loc, 80)
+			return res
+		}
+		res.OK = true
+		res.Detail = fmt.Sprintf("HTTP %d -> %s", resp.StatusCode, truncate(loc, 60))
+		return res
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Sprintf("HTTP %d（疑似被重定向/劫持）", resp.StatusCode)
+		res.Detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return res
 	}
-	if !strings.Contains(body, c.cfg.ConnectivityExpect) {
-		return false, "内容与预期不符（疑似门户重定向）: " + truncate(strings.TrimSpace(body), 80)
+	if p.Expect != "" && !strings.Contains(strings.ToLower(body), strings.ToLower(p.Expect)) {
+		res.Detail = "正文不含 " + p.Expect + "（疑似门户劫持）: " + truncate(strings.TrimSpace(body), 60)
+		return res
 	}
-	return true, "ok"
+	res.OK = true
+	res.Detail = "ok"
+	return res
+}
+
+// hostOf 从 URL 中取出主机名（不含协议与路径）。
+func hostOf(rawURL string) string {
+	s := rawURL
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// SummarizeProbes 生成简短的探针结果摘要，用于日志。
+func SummarizeProbes(results []ProbeResult) string {
+	parts := make([]string, 0, len(results))
+	for _, r := range results {
+		if r.OK {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s)", r.Name, r.Detail))
+	}
+	if len(parts) == 0 {
+		return "全部通过"
+	}
+	return "未通过: " + strings.Join(parts, "; ")
 }
 
 type LoginResult struct {

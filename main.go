@@ -130,6 +130,23 @@ func cmdStatus(cfg Config) {
 		fatal("初始化客户端失败: %v", err)
 	}
 
+	okCount, pres := c.CheckProbes()
+	threshold := cfg.ProbeThreshold
+	if threshold < 1 {
+		threshold = 1
+	}
+	if threshold > len(pres) {
+		threshold = len(pres)
+	}
+	for _, r := range pres {
+		mark := "✗"
+		if r.OK {
+			mark = "✓"
+		}
+		fmt.Printf("探针 %-6s %s  %s\n", r.Name, mark, r.Detail)
+	}
+	fmt.Printf("探针汇总       : %d/%d 通过（阈值 %d）\n", okCount, len(pres), threshold)
+
 	st, err := c.Status()
 	if err != nil {
 		fmt.Printf("ip.php 探测失败 : %v\n", err)
@@ -138,13 +155,14 @@ func cmdStatus(cfg Config) {
 	b, _ := json.Marshal(st)
 	fmt.Printf("POST /api/ip.php: %s\n", string(b))
 
-	ok, detail := c.CheckInternet()
-	fmt.Printf("外网连通       : %v（%s）\n", ok, detail)
-
-	if st.Data.Logined == 1 && ok {
-		fmt.Println("判定           : 状态正常，无需重登")
+	if okCount >= threshold {
+		fmt.Println("判定           : 网络正常，无需重登")
+		return
+	}
+	if st.Data.Logined == 0 {
+		fmt.Println("判定           : 已掉线（logined=0），需要重新认证")
 	} else {
-		fmt.Println("判定           : 需要重新认证")
+		fmt.Println("判定           : 认证态尚在但外网不通，疑似会话僵死（连续多轮才重登）")
 	}
 }
 
@@ -182,40 +200,61 @@ func runCycle(cfg Config, lg *Logger, state *agentState) cycleResult {
 		return cycleResult{Kind: kindError, Detail: "初始化客户端失败: " + err.Error()}
 	}
 
-	st, err := c.Status()
-	if err != nil {
-		return cycleResult{Kind: kindError, Detail: "探测 ip.php 失败: " + err.Error()}
-	}
-
-	netOK, netDetail := c.CheckInternet()
-
-	threshold := cfg.NetFailThreshold
+	// 第 1 步：多探针投票
+	okCount, pres := c.CheckProbes()
+	total := len(pres)
+	threshold := cfg.ProbeThreshold
 	if threshold < 1 {
 		threshold = 1
 	}
-
-	if st.Data.Logined == 1 {
-		if netOK {
-			state.netBadStreak = 0
-			return cycleResult{Kind: kindOK, IP: st.Data.IP}
-		}
-		// logined 说正常，但外网不通：可能是瞬时抖动，累计到阈值才动手
-		state.netBadStreak++
-		if state.netBadStreak < threshold {
-			return cycleResult{Kind: kindUnstable, IP: st.Data.IP,
-				Detail: fmt.Sprintf("logined=1 但外网不通（第 %d/%d 轮，%s），继续观察",
-					state.netBadStreak, threshold, netDetail)}
-		}
-	} else {
-		state.netBadStreak = 0
+	if threshold > total {
+		threshold = total
 	}
 
+	if okCount >= threshold {
+		state.netBadStreak = 0
+		return cycleResult{Kind: kindOK, IP: campusIPv4(cfg.ExpectIPPrefix),
+			Detail: fmt.Sprintf("探针 %d/%d", okCount, total)}
+	}
+
+	// 第 2 步：探针不达标 → 用门户接口直接看认证态
+	st, err := c.Status()
+	if err != nil {
+		return cycleResult{Kind: kindError,
+			Detail: fmt.Sprintf("探针仅 %d/%d 通过，且探测 ip.php 失败: %v", okCount, total, err)}
+	}
+
+	if st.Data.Logined == 0 {
+		// 认证态明确为"已掉线" → 立即重登，不需要等待
+		return doRelogin(cfg, lg, c,
+			fmt.Sprintf("logined=0（探针 %d/%d，%s）", okCount, total, SummarizeProbes(pres)))
+	}
+
+	// logined=1 但外网不通：可能是会话僵死，也可能是上游瞬时抖动。
+	// 后者若直接重登，会平白挤掉使用者另一台设备，因此先累计观察。
+	failThreshold := cfg.NetFailThreshold
+	if failThreshold < 1 {
+		failThreshold = 1
+	}
+	state.netBadStreak++
+	if state.netBadStreak < failThreshold {
+		return cycleResult{Kind: kindUnstable, IP: st.Data.IP,
+			Detail: fmt.Sprintf("logined=1 但探针仅 %d/%d 通过（第 %d/%d 轮），继续观察：%s",
+				okCount, total, state.netBadStreak, failThreshold, SummarizeProbes(pres))}
+	}
+
+	return doRelogin(cfg, lg, c,
+		fmt.Sprintf("logined=1 但连续 %d 轮外网不通（探针 %d/%d），判定会话僵死",
+			state.netBadStreak, okCount, total))
+}
+
+// doRelogin 执行完整的重登时序并复核，返回本轮结果。
+func doRelogin(cfg Config, lg *Logger, c *PortalClient, reason string) cycleResult {
 	if cfg.User == "" || cfg.Password == "" {
 		return cycleResult{Kind: kindError, Detail: "config.json 中缺少 user 或 password"}
 	}
 
-	lg.Warnf("检测到掉线（ip=%s logined=%d 外网=%v %s），开始重新认证",
-		st.Data.IP, st.Data.Logined, netOK, netDetail)
+	lg.Warnf("检测到掉线（%s），开始重新认证", reason)
 
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 	pass, err := EncodePassword([]byte(cfg.Password), rnd)
@@ -232,18 +271,31 @@ func runCycle(cfg Config, lg *Logger, state *agentState) cycleResult {
 			Detail: fmt.Sprintf("login.php ret=%d msg=%q", lr.LoginRet, lr.LoginMsg)}
 	}
 
-	// 复核：新建会话再探一次，避免受本次登录会话的 sessionlogined 干扰
-	c2, err := NewPortalClient(cfg)
-	if err != nil {
-		c2 = c
+	// 复核：多探针 + 新建会话再探一次 ip.php
+	okCount, pres := c.CheckProbes()
+	threshold := cfg.ProbeThreshold
+	if threshold < 1 {
+		threshold = 1
 	}
-	if st2, err2 := c2.Status(); err2 == nil && st2.Data.Logined == 1 {
-		if ok2, _ := c2.CheckInternet(); ok2 {
-			return cycleResult{Kind: kindReloginOK, IP: st2.Data.IP, Detail: lr.StatMsg}
+	if threshold > len(pres) {
+		threshold = len(pres)
+	}
+	if okCount >= threshold {
+		c2, err2 := NewPortalClient(cfg)
+		if err2 != nil {
+			c2 = c
 		}
+		ip := ""
+		if st2, err3 := c2.Status(); err3 == nil {
+			ip = st2.Data.IP
+		}
+		return cycleResult{Kind: kindReloginOK, IP: ip,
+			Detail: fmt.Sprintf("探针 %d/%d，%s", okCount, len(pres), lr.StatMsg)}
 	}
+
 	return cycleResult{Kind: kindReloginFail,
-		Detail: fmt.Sprintf("认证后复核未通过（ack=%d stat=%d %q）", lr.AckRet, lr.StatRet, lr.StatMsg)}
+		Detail: fmt.Sprintf("认证后复核未通过（探针 %d/%d；ack=%d stat=%d %q；%s）",
+			okCount, len(pres), lr.AckRet, lr.StatRet, lr.StatMsg, SummarizeProbes(pres))}
 }
 
 func cmdOnce(cfg Config, lg *Logger) {
