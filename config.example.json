@@ -1,0 +1,18 @@
+{
+  "portal": "http://10.20.33.101",
+  "user": "<你的校园网账号>",
+  "authmode": 0,
+  "pool": "",
+  "isp_id": 0,
+  "pxyacct": "",
+  "expected_ip_prefix": "10.112.",
+  "interval_seconds": 30,
+  "max_backoff_seconds": 300,
+  "timeout_seconds": 10,
+  "connectivity_url": "http://www.msftconnecttest.com/connecttest.txt",
+  "connectivity_expect": "Microsoft Connect Test",
+  "connectivity_retries": 3,
+  "net_fail_threshold": 2,
+  "machine_scope": true,
+  "log_max_bytes": 5242880
+}

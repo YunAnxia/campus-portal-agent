@@ -1,0 +1,11 @@
+# 默认按文本处理，工作区使用 LF
+* text=auto eol=lf
+
+# Windows 批处理必须保持 CRLF，否则 cmd.exe 解析失败
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制
+*.exe   binary
+*.dpapi binary
