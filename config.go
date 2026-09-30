@@ -37,11 +37,11 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		Portal:              "http://10.20.33.101",
-		AuthMode:            0,
-		Pool:                "",
-		ISPID:               0,
-		PxyAcct:             "",
+		Portal:            "http://10.20.33.101",
+		AuthMode:          0,
+		Pool:              "",
+		ISPID:             0,
+		PxyAcct:           "",
 		ExpectIPPrefix:    "10.112.",
 		IntervalSeconds:   30,
 		MaxBackoffSeconds: 300,
