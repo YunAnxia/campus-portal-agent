@@ -99,7 +99,8 @@ cd C:\ProgramData\CampusPortalAgent
 
 **第 1 步 · 多探针并发投票**
 
-并发请求 `probes` 里配置的多个独立厂商端点。一个探针被判为"通"的条件是二者之一：
+并发请求 `probes` 里配置的多个独立厂商端点（默认 6 个：4 家厂商的 HTTP + 2 家的 DoH）。
+一个探针被判为"通"的条件是二者之一：
 
 1. HTTP **200**，且 `expect` 为空或正文包含 `expect`（忽略大小写）；
 2. HTTP **3xx**（301/302/303/307/308），且 `Location` **不指向门户**。
@@ -108,7 +109,7 @@ cd C:\ProgramData\CampusPortalAgent
 若只认 200，正常跳转也会被判为不通，导致**每轮都误重登**。
 而门户劫持的跳转目标是门户自身，所以用「Location 是否指向门户」精确区分。
 
-成功数 ≥ `probe_threshold`（默认 3）即判为**网络正常**，本轮结束，**不再请求门户接口**。
+成功数 ≥ `probe_threshold`（默认 4）即判为**网络正常**，本轮结束，**不再请求门户接口**。
 
 **第 2 步 · 探针不达标时，查门户认证态**
 
@@ -121,8 +122,11 @@ POST /api/ip.php
 ```
 
 之所以把多探针放在前面：单一探针极易被"目标站点本身在本网络不可达"误伤
-（实测 `www.msftconnecttest.com` 在校园网连不通、`dns.alidns.com` 与 `doh.pub` 的 DoH 也全部不通），
+（实测 `www.msftconnecttest.com` 在校园网连不通），
 一旦误判就会反复重登，反而不断挤掉使用者其它设备。
+
+探针混用 HTTP 与 HTTPS 两种协议：**HTTP 探针能被门户劫持"看见"**，
+用于判定认证态是否失效；**HTTPS/DoH 探针门户劫持不了**，用于判定链路本身是否通。
 
 ### 4.2 重登时序
 
@@ -169,16 +173,36 @@ POST /api/stat.php      状态确认，期望 msg 为「认证成功！」
 | `interval_seconds` | `30` | 正常轮询间隔 |
 | `max_backoff_seconds` | `300` | 退避上限 |
 | `timeout_seconds` | `10` | 单次请求超时 |
-| `probes` | 百度 / 必应 / 阿里云 / 腾讯云 | 探针列表，每项 `{name, url, expect}`。并发请求，多探针投票 |
-| `probe_threshold` | `3` | 至少多少个探针通过才判为网络正常 |
+| `probes` | 6 个（见下） | 探针列表，每项 `{name, url, expect}`。并发请求，多探针投票 |
+| `probe_threshold` | `4` | 至少多少个探针通过才判为网络正常 |
 | `probe_timeout_seconds` | `8` | 单个探针的超时 |
 | `net_fail_threshold` | `2` | 探针不达标但 `logined=1` 时，连续多少轮才判为会话僵死并重登 |
 | `log_max_bytes` | `5242880` | 日志超过则轮转为 `agent.log.old` |
 
-> **换探针时注意**：每个探针都必须是「在你所在网络里可达、且正文稳定」的普通 HTTP 地址。
-> 实测在本校园网内，`www.msftconnecttest.com`、`detectportal.firefox.com`、
-> 以及阿里云/腾讯云的 DoH 端点（`dns.alidns.com`、`doh.pub`）**全部连不通**，
-> 用它们当探针会导致误判掉线并反复重登。仓库默认的四个探针均已实测可用。
+默认探针混用 **HTTP 与 HTTPS 两种协议**，各自承担不同职责：
+
+| 探针 | 协议 | 地址 | 期望正文 |
+|---|---|---|---|
+| 百度 | HTTP | `http://www.baidu.com/robots.txt` | `Baiduspider` |
+| 必应 | HTTP | `http://www.bing.com/robots.txt` | `msnbot` |
+| 阿里云 | HTTP | `http://mirrors.aliyun.com/robots.txt` | `User-agent` |
+| 腾讯云 | HTTP | `http://cloud.tencent.com/robots.txt` | `tencent` |
+| 阿里DoH | HTTPS | `https://dns.alidns.com/resolve?name=www.baidu.com&type=A` | `"Status":0` |
+| 腾讯DoH | HTTPS | `https://doh.pub/dns-query?name=www.baidu.com&type=A` | `"Status":0` |
+
+- **HTTP 探针**：门户能劫持 HTTP，所以这类探针能"看见"认证失效（被劫持或返回门户页面即判不通）；
+- **HTTPS/DoH 探针**：门户无法劫持 HTTPS，用于判定"链路本身是否通"，并顺带验证 DNS 可用性。
+
+> **两个实测踩过的坑**
+>
+> 1. **不要用 `www.msftconnecttest.com`**：它在部分校园网完全连不通（连测 6 次全 000），
+>    会导致误判掉线并反复重登 —— 反而不断挤掉使用者的其它设备。
+> 2. **阿里云 DoH 有两套接口，参数不同**（很容易传错）：
+>    - `https://dns.alidns.com/dns-query` —— RFC 8484 **wire 格式**，要 `?dns=<base64url 二进制报文>`，
+>      并带 `accept: application/dns-message`；传 `name=` 会被拒（"no 'dns' query parameter found"）。
+>    - `https://dns.alidns.com/resolve` —— **JSON 风格**，接受 `?name=&type=`，
+>      需带 `accept: application/dns-json`。本仓库用的是这个。
+>    - IP 形式 `https://223.5.5.5/resolve` 也可用（阿里证书 SAN 中带该 IP，故校验能过）。
 
 ## 6. 排错
 

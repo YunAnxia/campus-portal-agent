@@ -56,16 +56,29 @@ type Config struct {
 	LogMaxBytes      int64 `json:"log_max_bytes"`
 }
 
-// defaultProbes 选的都是「本网络实测可达、且正文稳定」的普通 HTTP 端点。
+// defaultProbes 是默认探针集：4 家厂商的普通 HTTP 端点 + 2 家厂商的 DoH(HTTPS)。
 //
-// 不用 DoH（dns.alidns.com / doh.pub）：实测在校园网内全部连不通，
-// 即使关闭 TUN、DNS 恢复正常后依然不通，不适合当探针。
+// 为何混用两种协议：
+//   - HTTP 探针能被门户劫持"看见"（劫持会返回 3xx 到门户或门户页面），
+//     用于判定"认证态是否已失效"；
+//   - DoH 探针走 HTTPS，门户无法劫持，用于判定"链路本身是否通"，
+//     同时顺带验证 DNS 可用性。
+//
+// 关于阿里云 DoH 的传参（易错点）：它有两套接口，参数不同 ——
+//   - https://dns.alidns.com/dns-query   需要 RFC 8484 的 dns=<base64url 二进制报文>
+//   - https://dns.alidns.com/resolve     才是 JSON 风格，接受 name=/type=
+//     并要求请求头 accept: application/dns-json
+//
+// 本探针用的是后者。IP 形式 https://223.5.5.5/resolve 同样可用
+// （阿里证书 SAN 中含该 IP），此处不重复计入。
 func defaultProbes() []Probe {
 	return []Probe{
 		{Name: "百度", URL: "http://www.baidu.com/robots.txt", Expect: "Baiduspider"},
 		{Name: "必应", URL: "http://www.bing.com/robots.txt", Expect: "msnbot"},
 		{Name: "阿里云", URL: "http://mirrors.aliyun.com/robots.txt", Expect: "User-agent"},
 		{Name: "腾讯云", URL: "http://cloud.tencent.com/robots.txt", Expect: "tencent"},
+		{Name: "阿里DoH", URL: "https://dns.alidns.com/resolve?name=www.baidu.com&type=A", Expect: `"Status":0`},
+		{Name: "腾讯DoH", URL: "https://doh.pub/dns-query?name=www.baidu.com&type=A", Expect: `"Status":0`},
 	}
 }
 
@@ -79,7 +92,7 @@ func defaultConfig() Config {
 		MaxBackoffSeconds:   300,
 		TimeoutSeconds:      10,
 		Probes:              defaultProbes(),
-		ProbeThreshold:      3,
+		ProbeThreshold:      4, // 6 个探针（4 家厂商）里至少 4 个通，约等于"4 家里至少 3 家可用"
 		ProbeTimeoutSeconds: 8,
 		NetFailThreshold:    2,
 		LogMaxBytes:         5 << 20,
